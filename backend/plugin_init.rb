@@ -6,12 +6,13 @@ reporter = ContainerImport::Reporter.new(
   "/tmp/aspace/status.txt",
   "/tmp/aspace/error.txt"
 )
-reporter.report "Import start: #{Time.now}\n-----"
+reporter.report "# Import start: #{Time.now}\n-----"
 
 # resource  series  box barcode location  coordinate
 container_csv_path = "/tmp/aspace/container.csv"
 resource_cache     = Hash.new { |hash, key| hash[key] = {} }
 component_cache    = Hash.new { |hash, key| hash[key] = {} }
+resource_groups    = Hash.new { |hash, key| hash[key] = {} }
 count = 0
 
 # container in instance obj
@@ -130,6 +131,8 @@ ArchivesSpaceService.loaded_hook do
       r_obj = resource_cache.has_key?(resource_id) ? resource_cache[resource_id][:model]  : Resource.to_jsonmodel(resource_id)
 
       if series
+        next
+        # TODO: cache this lookup
         series_id = find_series(repo_id, resource_id, series)
         if series_id
           reporter.report "Found series #{series} (#{series_id}) for resource #{resource} (#{resource_id})"
@@ -189,13 +192,13 @@ ArchivesSpaceService.loaded_hook do
           component_cache[series_id][:model]  = ao_obj
         end
       else
-        # no series provided in csv so create container associated with resource
-        r_obj["instances"] << build_container(box, barcode)
-        r.update_from_json(JSONModel.JSONModel(:resource).from_hash(r_obj.to_hash))
-        # refresh cache for this resource
-        resource_cache[resource_id][:record] = Resource.get_or_die(resource_id)
-        resource_cache[resource_id][:model]  = Resource.to_jsonmodel(resource_id)
-        reporter.report "Created container box #{box} with barcode #{barcode} for resource #{resource} (#{resource_id})"
+        # no series provided so for now just group the resources to batch later
+        unless resource_groups.has_key? resource_id
+          resource_groups[resource_id][:repo_id] = repo_id
+          resource_groups[resource_id][:data]    = []
+        end
+        resource_groups[resource_id][:data] << data
+        reporter.report "Added data for resource #{resource} (#{resource_id}) to resource groups"
       end
 
       # resource cache
@@ -210,5 +213,24 @@ ArchivesSpaceService.loaded_hook do
   end
 end
 
-reporter.report "Import done: #{Time.now}\n-----"
+# 1: Process resource groups (resources without series, container at resource level)
+reporter.report "# Processing resource groups: #{Time.now}\n-----"
+resource_groups.each do |resource_id, group|
+  RequestContext.open(:repo_id => group[:repo_id], current_username: "admin") do
+    r     = resource_cache.has_key?(resource_id) ? resource_cache[resource_id][:record] : Resource.get_or_die(resource_id)
+    r_obj = resource_cache.has_key?(resource_id) ? resource_cache[resource_id][:model]  : Resource.to_jsonmodel(resource_id)
+    group[:data].each do |data|
+      resource = data["resource"]
+      box      = data["box"]
+      barcode  = data["barcode"]
+      r_obj["instances"] << build_container(box, barcode)
+      reporter.report "Added container box #{box} with barcode #{barcode} to resource #{resource} (#{resource_id})"
+    end
+    r.update_from_json(JSONModel.JSONModel(:resource).from_hash(r_obj.to_hash))
+    reporter.report "Created containers for resource (#{resource_id})"
+    reporter.report "-----"
+  end
+end
+
+reporter.report "# Import done: #{Time.now}\n-----"
 reporter.finish
