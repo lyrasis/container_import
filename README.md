@@ -71,6 +71,10 @@ Stop and delete the `data` directory contents. Upgrade to `2.0.1`. Confirm:
 - no upgrade errors
 - reindexing completes
 
+Check the `container_conversion` report (Background Jobs). There may be errors
+not associated with the data import. If concerned / unsure perform an upgrade
+on the database without the imported data and compare.
+
 # TODO
 
 - Locations
