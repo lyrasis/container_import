@@ -11,8 +11,8 @@ reporter.report "# Import start: #{Time.now}\n-----"
 # resource  series  box barcode location  coordinate
 container_csv_path = "/tmp/aspace/container.csv"
 resource_cache     = Hash.new { |hash, key| hash[key] = {} }
-component_cache    = Hash.new { |hash, key| hash[key] = {} }
 resource_groups    = Hash.new { |hash, key| hash[key] = {} }
+series_groups      = Hash.new { |hash, key| hash[key] = {} }
 count = 0
 
 # container in instance obj
@@ -30,11 +30,10 @@ def build_container(box, barcode)
   }
 end
 
-# component including container in instance obj
-def build_series(series, box, barcode, resource_uri)
+# component only
+def build_series(series, resource_uri)
   {
     "component_id" => "Series #{series}.",
-    "instances"    => [ build_container(box, barcode) ],
     "level"        => "series",
     "resource"     => {"ref" => resource_uri},
     "title"        => "ContainerImport #{series}",
@@ -121,7 +120,7 @@ ArchivesSpaceService.loaded_hook do
       next
     end
 
-    reporter.report "Row #{count} data: #{data}"
+    reporter.report "Preparing row #{count} data: #{data}"
 
     repo_id     = resources[parsed][:repo_id]
     resource_id = resources[parsed][:id]
@@ -131,74 +130,39 @@ ArchivesSpaceService.loaded_hook do
       r_obj = resource_cache.has_key?(resource_id) ? resource_cache[resource_id][:model]  : Resource.to_jsonmodel(resource_id)
 
       if series
-        next
-        # TODO: cache this lookup
-        series_id = find_series(repo_id, resource_id, series)
-        if series_id
-          reporter.report "Found series #{series} (#{series_id}) for resource #{resource} (#{resource_id})"
-          found_box = false
-          ao        = component_cache.has_key?(series_id) ? component_cache[series_id][:record] : ArchivalObject.get_or_die(series_id)
-          ao_obj    = component_cache.has_key?(series_id) ? component_cache[series_id][:model]  : ArchivalObject.to_jsonmodel(series_id)
-
-          # check direct children of series for container (box)
-          child_ids = find_children_by_parent_id(series_id, repo_id, resource_id)
-          child_ids.each do |child_id|
-            child_ao  = component_cache.has_key?(child_id) ? component_cache[child_id][:record] : ArchivalObject.get_or_die(child_id)
-            child_obj = component_cache.has_key?(child_id) ? component_cache[child_id][:model]  : ArchivalObject.to_jsonmodel(child_id)
-
-            child_obj["instances"].each do |i|
-              if i.has_key?("container") && i["container"]["type_1"] == "box" && i["container"]["indicator_1"] == box
-                found_box = true
-                i["container"]["barcode_1"] = barcode
-                child_ao.update_from_json(JSONModel.JSONModel(:archival_object).from_hash(child_obj.to_hash))
-                # refresh cache for this component
-                component_cache[child_id][:record] = ArchivalObject.get_or_die(child_id)
-                component_cache[child_id][:model]  = ArchivalObject.to_jsonmodel(child_id)
-                reporter.report "Updated barcode for resource #{resource} (#{resource_id}), series #{series} (#{series_id}), box #{box} to #{barcode}"
-              end
-            end
-
-            # child cache
-            unless component_cache.has_key? child_id
-              component_cache[child_id][:record] = child_ao
-              component_cache[child_id][:model]  = child_obj
-            end
-          end
-
-          # if no container matches then create container assoc with series
-          unless found_box
-            reporter.report "Did not find box for resource #{resource} (#{resource_id}), series #{series} (#{series_id}) with indicator #{box}"
-            ao_obj["instances"] << build_container(box, barcode)
-            ao.update_from_json(JSONModel.JSONModel(:archival_object).from_hash(ao_obj.to_hash))
-            # refresh cache for this series
-            component_cache[series_id][:record] = ArchivalObject.get_or_die(series_id)
-            component_cache[series_id][:model]  = ArchivalObject.to_jsonmodel(series_id)
-            reporter.report "Created container box #{box} with barcode #{barcode} for series #{series} (#{series_id}) in resource #{resource} (#{resource_id})"
-          end
-        else
-          # series was not found so create series level component with container
-          reporter.report "Did not find series #{series} for resource #{resource} (#{resource_id})"
-          series_obj = build_series(series, box, barcode, r_obj["uri"])
-          series_rec = ArchivalObject.create_from_json(JSONModel.JSONModel(:archival_object).from_hash(series_obj))
-          series_id  = series_rec.id
-          component_cache[series_id][:record] = ArchivalObject.get_or_die(series_id)
-          component_cache[series_id][:model]  = ArchivalObject.to_jsonmodel(series_id)
-          reporter.report "Created series #{series} (#{series_id}) in resource #{resource} (#{resource_id}) with box indicator #{box} and barcode #{barcode}"
+        unless series_groups.has_key?(resource_id) and series_groups[resource_id].has_key?(series)
+          series_groups[resource_id][series] = {}
+          series_groups[resource_id][series][:id]           = nil
+          series_groups[resource_id][series][:repo_id]      = repo_id
+          series_groups[resource_id][series][:resource]     = resource
+          series_groups[resource_id][series][:resource_id]  = resource_id
+          series_groups[resource_id][series][:resource_uri] = r_obj["uri"]
+          series_groups[resource_id][series][:data]         = []
+          series_groups[resource_id][series][:exists]       = false
+          series_groups[resource_id][series][:children]     = []
         end
 
-        # series cache
-        unless component_cache.has_key? series_id
-          component_cache[series_id][:record] = ao
-          component_cache[series_id][:model]  = ao_obj
+        unless series_groups[resource_id][series][:id]
+          series_id = find_series(repo_id, resource_id, series)
+          if series_id
+            series_groups[resource_id][series][:id]       = series_id
+            series_groups[resource_id][series][:exists]   = true
+            series_groups[resource_id][series][:children] = []
+            child_ids = find_children_by_parent_id(series_id, repo_id, resource_id)
+            child_ids.each do |child_id|
+              series_groups[resource_id][series][:children] << ArchivalObject.get_or_die(child_id)
+            end
+          end
         end
+
+        series_groups[resource_id][series][:data] << data
       else
-        # no series provided so for now just group the resources to batch later
+        # no series provided so just group the resources to batch later
         unless resource_groups.has_key? resource_id
           resource_groups[resource_id][:repo_id] = repo_id
           resource_groups[resource_id][:data]    = []
         end
         resource_groups[resource_id][:data] << data
-        reporter.report "Added data for resource #{resource} (#{resource_id}) to resource groups"
       end
 
       # resource cache
@@ -209,12 +173,70 @@ ArchivesSpaceService.loaded_hook do
     end
 
     reporter.report "-----"
-    # break
   end
 end
 
-# 1: Process resource groups (resources without series, container at resource level)
-reporter.report "# Processing resource groups: #{Time.now}\n-----"
+# Process series groups
+reporter.report "# Import series groups: #{Time.now}\n-----"
+series_groups.each do |resource_id, series_group|
+  series_group.each do |series, group|
+    reporter.report "Processing series #{series} for resource #{group[:resource]} (#{resource_id})"
+    data_updated_child = []
+    child_updated      = []
+    RequestContext.open(:repo_id => group[:repo_id], current_username: "admin") do
+      # a) Create series that do not exist
+      unless group[:exists]
+        series_obj = build_series(series, group["resource_uri"])
+        series_rec = ArchivalObject.create_from_json(JSONModel.JSONModel(:archival_object).from_hash(series_obj))
+        group[:id] = series_rec.id
+        reporter.report "Created series #{series} (#{group[:id]}) for resource #{group[:resource]} (#{resource_id})"
+      end
+
+      # b) Find children with matching boxes, update barcode and cleanup (remove used) data
+      if group[:children].any?
+        group[:data].each do |data|
+          resource = data["resource"]
+          barcode  = data["barcode"]
+          box      = data["box"]
+
+          group[:children].each do |child|
+            child_obj = ArchivalObject.to_jsonmodel(child.id)
+
+            child_obj["instances"].each do |i|
+              if i.has_key?("container") && i["container"]["type_1"] == "box" && i["container"]["indicator_1"] == box
+                i["container"]["barcode_1"] = barcode
+                child.update_from_json(JSONModel.JSONModel(:archival_object).from_hash(child_obj.to_hash))
+                data_updated_child << data
+                child_updated << child
+                reporter.report "Updated barcode for resource #{resource} (#{resource_id}), series #{series} (#{group[:id]}), box #{box} to #{barcode}"
+              end
+            end
+          end
+          child_updated.each { |c| group[:children].delete(c) }
+        end
+      end
+      data_updated_child.each { |d| group[:data].delete(d) }
+
+      # c) add container to series if data still present (i.e. data did not update existing container)
+      next unless group[:data].any?
+      ao     = ArchivalObject.get_or_die(group[:id])
+      ao_obj = ArchivalObject.to_jsonmodel(group[:id])
+      group[:data].each do |data|
+        resource = data["resource"]
+        box      = data["box"]
+        barcode  = data["barcode"]
+        ao_obj["instances"] << build_container(box, barcode)
+        reporter.report "Added container box #{box} with barcode #{barcode} to series #{series} (#{group[:id]}) in resource #{resource} (#{resource_id})"
+      end
+      ao.update_from_json(JSONModel.JSONModel(:archival_object).from_hash(ao_obj.to_hash))
+      reporter.report "Created containers for series #{series} (#{group[:id]})"
+    end
+    reporter.report "-----"
+  end
+end
+
+# Process resource groups (resources without series, container at resource level)
+reporter.report "# Import resource groups: #{Time.now}\n-----"
 resource_groups.each do |resource_id, group|
   RequestContext.open(:repo_id => group[:repo_id], current_username: "admin") do
     r     = resource_cache.has_key?(resource_id) ? resource_cache[resource_id][:record] : Resource.get_or_die(resource_id)
