@@ -111,12 +111,12 @@ ArchivesSpaceService.loaded_hook do
     coordinate = data["coordinate"]
 
     unless resources.has_key?(parsed)
-      reporter.complain "Skipping row #{count} \"#{resource}:#{parsed}\" resource not found in ArchivesSpace!"
+      reporter.complain "Skipping row #{count} \"#{resource}:#{parsed}\" resource not found in ArchivesSpace"
       next
     end
 
     unless box && barcode
-      reporter.complain "Skipping row #{count} \"#{resource}:#{parsed}\" box and barcode values are required!"
+      reporter.complain "Skipping row #{count} \"#{resource}:#{parsed}\" box and barcode values are required"
       next
     end
 
@@ -150,7 +150,11 @@ ArchivesSpaceService.loaded_hook do
             series_groups[resource_id][series][:children] = []
             child_ids = find_children_by_parent_id(series_id, repo_id, resource_id)
             child_ids.each do |child_id|
-              series_groups[resource_id][series][:children] << ArchivalObject.get_or_die(child_id)
+              # eat the cost of this up front
+              series_groups[resource_id][series][:children] << [
+                ArchivalObject.get_or_die(child_id),
+                ArchivalObject.to_jsonmodel(child_id)
+              ]
             end
           end
         end
@@ -182,7 +186,6 @@ series_groups.each do |resource_id, series_group|
   series_group.each do |series, group|
     reporter.report "Processing series #{series} for resource #{group[:resource]} (#{resource_id})"
     data_updated_child = []
-    child_updated      = []
     RequestContext.open(:repo_id => group[:repo_id], current_username: "admin") do
       # a) Create series that do not exist
       unless group[:exists]
@@ -199,20 +202,22 @@ series_groups.each do |resource_id, series_group|
           barcode  = data["barcode"]
           box      = data["box"]
 
-          group[:children].each do |child|
-            child_obj = ArchivalObject.to_jsonmodel(child.id)
+          group[:children].each do |child_pair|
+            child, child_obj = child_pair
 
             child_obj["instances"].each do |i|
               if i.has_key?("container") && i["container"]["type_1"] == "box" && i["container"]["indicator_1"] == box
                 i["container"]["barcode_1"] = barcode
-                child.update_from_json(JSONModel.JSONModel(:archival_object).from_hash(child_obj.to_hash))
+                begin
+                  child.update_from_json(JSONModel.JSONModel(:archival_object).from_hash(child_obj.to_hash))
+                  reporter.report "Updated barcode for resource #{resource} (#{resource_id}), series #{series} (#{group[:id]}), box #{box} to #{barcode}"
+                rescue Exception => ex
+                  reporter.complain "Failed updating barcode for resource #{resource} (#{resource_id}), series #{series} (#{group[:id]}), box #{box} to #{barcode}: #{ex.message}"
+                end
                 data_updated_child << data
-                child_updated << child
-                reporter.report "Updated barcode for resource #{resource} (#{resource_id}), series #{series} (#{group[:id]}), box #{box} to #{barcode}"
               end
             end
           end
-          child_updated.each { |c| group[:children].delete(c) }
         end
       end
       data_updated_child.each { |d| group[:data].delete(d) }
