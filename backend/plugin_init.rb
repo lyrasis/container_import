@@ -189,7 +189,7 @@ series_groups.each do |resource_id, series_group|
     RequestContext.open(:repo_id => group[:repo_id], current_username: "admin") do
       # a) Create series that do not exist
       unless group[:exists]
-        series_obj = build_series(series, group["resource_uri"])
+        series_obj = build_series(series, group[:resource_uri])
         series_rec = ArchivalObject.create_from_json(JSONModel.JSONModel(:archival_object).from_hash(series_obj))
         group[:id] = series_rec.id
         reporter.report "Created series #{series} (#{group[:id]}) for resource #{group[:resource]} (#{resource_id})"
