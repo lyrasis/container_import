@@ -18,7 +18,11 @@ docker run -d \
   -e MYSQL_USER=archivesspace \
   -e MYSQL_PASSWORD=archivesspace \
   -v /tmp/mysql:/tmp/mysql \
-  mysql:5.6 --innodb_buffer_pool_size=4G --innodb_buffer_pool_instances=4
+  mysql:5.6 \
+  --character-set-server=utf8 \
+  --collation-server=utf8_unicode_ci \
+  --innodb_buffer_pool_size=4G \
+  --innodb_buffer_pool_instances=4
 ### END MYSQL
 ```
 
